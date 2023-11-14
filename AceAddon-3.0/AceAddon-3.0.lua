@@ -5,6 +5,7 @@
 -- * **OnInitialize**, which is called directly after the addon is fully loaded.
 -- * **OnEnable** which gets called during the PLAYER_LOGIN event, when most of the data provided by the game is already present.
 -- * **OnDisable**, which is only called when your addon is manually being disabled.
+-- * **OnUninitialize**, which is called during the ADDONS_UNLOADING event, before saved variables are about to be written.
 -- @usage
 -- -- A small (but complete) addon, that doesn't do anything,
 -- -- but shows usage of the callbacks.
@@ -26,11 +27,15 @@
 --   -- You would probably only use an OnDisable if you want to
 --   -- build a "standby" mode, or be able to toggle modules on/off.
 -- end
+--
+-- function MyAddon:OnUninitialize()
+--   -- do any final tasks here, like committing any data to Saved Variables.
+-- end
 -- @class file
 -- @name AceAddon-3.0.lua
 -- @release $Id$
 
-local MAJOR, MINOR = "AceAddon-3.0", 13
+local MAJOR, MINOR = "AceAddon-3.0", 14
 local AceAddon, oldminor = LibStub:NewLibrary(MAJOR, MINOR)
 
 if not AceAddon then return end -- No Upgrade needed.
@@ -40,6 +45,7 @@ AceAddon.addons = AceAddon.addons or {} -- addons in general
 AceAddon.statuses = AceAddon.statuses or {} -- statuses of addon.
 AceAddon.initializequeue = AceAddon.initializequeue or {} -- addons that are new and not initialized
 AceAddon.enablequeue = AceAddon.enablequeue or {} -- addons that are initialized and waiting to be enabled
+AceAddon.uninitializequeue = AceAddon.uninitializequeue or {}  -- addons that are initialized and waiting to be uninitialized
 AceAddon.embeds = AceAddon.embeds or setmetatable({}, {__index = function(tbl, key) tbl[key] = {} return tbl[key] end }) -- contains a list of libraries embedded in an addon
 
 -- Lua APIs
@@ -574,6 +580,26 @@ function AceAddon:DisableAddon(addon)
 	return not self.statuses[addon.name] -- return true if we're disabled
 end
 
+-- - Initialize the addon on shutdown.
+-- This function is only used internally during the ADDONS_UNLOADING event
+-- It will call the **OnUninitialize** function on the addon object (if present),
+-- and the **OnEmbedUninitialize** function on all embeded libraries.
+--
+-- **Note:** Do not call this function manually, unless you're absolutely sure that you know what you are doing.
+-- @param addon addon object to uninitialize
+function AceAddon:UninitializeAddon(addon)
+	safecall(addon.OnUninitialize, addon)
+
+	local embeds = self.embeds[addon]
+	for i = 1, #embeds do
+		local lib = LibStub:GetLibrary(embeds[i], true)
+		if lib then safecall(lib.OnEmbedUninitialize, lib, addon) end
+	end
+
+	-- we don't call UninitializeAddon on modules specifically, this is handled
+	-- from the event handler and only done _once_
+end
+
 --- Get an iterator over all registered addons.
 -- @usage
 -- -- Print a list of all installed AceAddon's
@@ -618,6 +644,7 @@ local function onEvent(this, event, arg1)
 			if event == "ADDON_LOADED" then addon.baseName = arg1 end
 			AceAddon:InitializeAddon(addon)
 			tinsert(AceAddon.enablequeue, addon)
+			tinsert(AceAddon.uninitializequeue, addon)
 		end
 
 		if IsLoggedIn() then
@@ -626,10 +653,17 @@ local function onEvent(this, event, arg1)
 				AceAddon:EnableAddon(addon)
 			end
 		end
+	elseif event == "ADDONS_UNLOADING" then
+		-- Uninitialize occurs in reverse order of initialization.
+		while(#AceAddon.uninitializequeue > 0) do
+			local addon = tremove(AceAddon.uninitializequeue)
+			AceAddon:UninitializeAddon(addon)
+		end
 	end
 end
 
 AceAddon.frame:RegisterEvent("ADDON_LOADED")
+AceAddon.frame:RegisterEvent("ADDONS_UNLOADING")
 AceAddon.frame:RegisterEvent("PLAYER_LOGIN")
 AceAddon.frame:SetScript("OnEvent", onEvent)
 

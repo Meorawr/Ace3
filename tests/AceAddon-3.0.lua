@@ -76,7 +76,7 @@ do -- Test mixin.
 end
 
 
-do -- Test the call to OnInitialize, OnEnable and OnDisable.
+do -- Test the call to OnInitialize, OnEnable, OnDisable, and OnUninitialize.
 
 	local addon = AceAddon:NewAddon("TestAddon-4","LibStupid","LibSmart")
 
@@ -94,6 +94,11 @@ do -- Test the call to OnInitialize, OnEnable and OnDisable.
 		enabled = false
 	end
 
+	local uninitialized = false;
+	function addon:OnUninitialize()
+		uninitialized = true
+	end
+
 	-- Testing the call to addon:OnInitialize().
 	WoWAPI_FireEvent("ADDON_LOADED",ADDON_NAME)
 	assert(initialized and not enabled)
@@ -109,6 +114,39 @@ do -- Test the call to OnInitialize, OnEnable and OnDisable.
 	AceAddon:DisableAddon(addon)
 	assert(initialized and not enabled)
 
+	-- Testing the call to addon:OnUninitialize().
+	WoWAPI_FireEvent("ADDONS_UNLOADING",ADDON_NAME)
+	assert(uninitialized)
+
+end
+
+
+do -- Test that OnUninitialize is called in reverse order of initialization.
+
+	local addon1 = AceAddon:NewAddon("InitializationOrderTest-1")
+	local addon2 = addon1:NewModule("InitializationOrderTest-2")
+	local addon3 = AceAddon:NewAddon("InitializationOrderTest-3")
+	local addon4 = addon1:NewModule("InitializationOrderTest-4")
+	local addons = { addon1, addon2, addon3, addon4 }
+
+	local orderInit = {}
+	local orderUninit = {}
+
+	for _, addon in ipairs(addons) do
+		addon.OnInitialize = function(self) table.insert(orderInit, self) end
+		addon.OnUninitialize = function(self) table.insert(orderUninit, self) end
+	end
+
+	WoWAPI_FireEvent("ADDON_LOADED",ADDON_NAME)
+	WoWAPI_FireEvent("PLAYER_LOGIN")
+	WoWAPI_FireEvent("ADDONS_UNLOADING",ADDON_NAME)
+
+	assert(#orderInit == #addons)
+	assert(#orderUninit == #addons)
+
+	for i, addon in ipairs(orderInit) do
+		assert(orderUninit[#addons - i + 1] == addon)
+	end
 end
 
 print("Test finished.")
