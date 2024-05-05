@@ -23,7 +23,7 @@
 -- LICENSE: ChatThrottleLib is released into the Public Domain
 --
 
-local CTL_VERSION = 28
+local CTL_VERSION = 29
 
 local _G = _G
 
@@ -66,7 +66,6 @@ ChatThrottleLib.MIN_FPS = 20				-- Reduce output CPS to half (and don't burst) i
 
 
 local setmetatable = setmetatable
-local table_remove = table.remove
 local tostring = tostring
 local GetTime = GetTime
 local math_min = math.min
@@ -74,7 +73,7 @@ local math_max = math.max
 local next = next
 local strlen = string.len
 local GetFramerate = GetFramerate
-local unpack,type,pairs,wipe = unpack,type,pairs,table.wipe
+local unpack,type,pairs = unpack,type,pairs
 
 
 -----------------------------------------------------------------------
@@ -111,6 +110,9 @@ function Ring:Remove(obj)
 			self.pos = nil
 		end
 	end
+	-- Make it a bit easier on the GC to reason about reachability.
+	obj.prev = nil
+	obj.next = nil
 end
 
 function Ring:Link(other)  -- Move and append all contents of another ring to this ring
@@ -144,11 +146,10 @@ end
 local function NewPipe()
 	local pipe = next(PipeBin)
 	if pipe then
-		wipe(pipe)
 		PipeBin[pipe] = nil
 		return pipe
 	end
-	return {}
+	return Ring:New()
 end
 
 
@@ -199,11 +200,24 @@ function ChatThrottleLib:Init()
 	end
 
 	-- All versions need to upgrade existing rings as the metatable isn't
-	-- shared between library versions.
+	-- shared between library versions. As of v29 each pipe itself is also
+	-- a ring storing messages, so we inline that conversion here.
 
 	for _, Prio in pairs(self.Prio) do
 		setmetatable(Prio.Ring, RingMeta)
 		setmetatable(Prio.Blocked, RingMeta)
+
+		local pipe = Prio.pos
+
+		while pipe do
+			setmetatable(pipe, RingMeta)
+			for i = 1, #pipe do
+				pipe:Add(pipe[i])
+				pipe[i] = nil
+			end
+
+			pipe = pipe.next
+		end
 	end
 
 	-- v4: total send counters per priority
@@ -375,9 +389,9 @@ end
 
 function ChatThrottleLib:Despool(Prio)
 	local ring = Prio.Ring
-	while ring.pos and Prio.avail > ring.pos[1].nSize do
+	while ring.pos and Prio.avail > ring.pos.pos.nSize do
 		local pipe = ring.pos
-		local msg = pipe[1]
+		local msg = pipe.pos
 		local sendResult = PerformSend(msg.f, unpack(msg, 1, msg.n))
 
 		if IsThrottledSendResult(sendResult) then
@@ -386,10 +400,10 @@ function ChatThrottleLib:Despool(Prio)
 			Prio.Blocked:Add(pipe)
 		else
 			-- Dequeue message after submission.
-			table_remove(pipe, 1)
+			pipe:Remove(msg)
 			DelMsg(msg)
 
-			if not pipe[1] then  -- did we remove last msg in this pipe?
+			if not pipe.pos then  -- did we remove last msg in this pipe?
 				Prio.Ring:Remove(pipe)
 				Prio.ByName[pipe.name] = nil
 				DelPipe(pipe)
@@ -512,7 +526,7 @@ function ChatThrottleLib:Enqueue(prioname, pipename, msg)
 		Prio.Ring:Add(pipe)
 	end
 
-	pipe[#pipe + 1] = msg
+	pipe:Add(msg)
 
 	self.bQueueing = true
 end
